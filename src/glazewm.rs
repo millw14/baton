@@ -190,6 +190,68 @@ pub fn config_path() -> PathBuf {
     PathBuf::from(home).join(".glzr").join("glazewm").join("config.yaml")
 }
 
+/// Where the CLI usually lives. The installer does not put it on PATH, so
+/// looking in the known locations first avoids an unhelpful "not found".
+fn cli_path() -> PathBuf {
+    let candidates = [
+        std::env::var("ProgramFiles")
+            .map(|p| PathBuf::from(p).join(r"glzr.io\GlazeWM\cli\glazewm.exe")),
+        std::env::var("ProgramFiles")
+            .map(|p| PathBuf::from(p).join(r"glzr.io\GlazeWM\glazewm.exe")),
+        std::env::var("LOCALAPPDATA")
+            .map(|p| PathBuf::from(p).join(r"Programs\glzr.io\GlazeWM\cli\glazewm.exe")),
+    ];
+    for candidate in candidates.into_iter().flatten() {
+        if candidate.exists() {
+            return candidate;
+        }
+    }
+    // Last resort: hope it is on PATH.
+    PathBuf::from("glazewm")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reload {
+    /// GlazeWM picked up the new config.
+    Done,
+    /// GlazeWM is not running, so there is nothing to reload. Not an error:
+    /// writing a config for a WM you will start later is perfectly normal.
+    NotRunning,
+    /// The CLI could not be found or run at all.
+    Unavailable(&'static str),
+}
+
+/// Decide what a CLI invocation actually meant.
+///
+/// Split out from the process call so the classification is testable: the
+/// difference between "not running" and "broken" decides whether `apply`
+/// reports a problem or stays quiet.
+fn classify(success: bool, stderr: &str) -> Reload {
+    if success {
+        return Reload::Done;
+    }
+    let lower = stderr.to_ascii_lowercase();
+    // GlazeWM's CLI says "Failed to connect to IPC server" with a WSAECONNREFUSED
+    // (10061) underneath when no instance is listening.
+    if lower.contains("connect") || lower.contains("10061") || lower.contains("ipc") {
+        Reload::NotRunning
+    } else {
+        Reload::Unavailable("the GlazeWM CLI returned an error")
+    }
+}
+
+/// Ask a running GlazeWM to re-read its config.
+pub fn reload() -> Reload {
+    let output = std::process::Command::new(cli_path())
+        .args(["command", "wm-reload-config"])
+        .output();
+
+    match output {
+        Ok(out) => classify(out.status.success(), &String::from_utf8_lossy(&out.stderr)),
+        Err(_) => Reload::Unavailable("could not run the GlazeWM CLI"),
+    }
+}
+
 /// Turn Baton's `[wm]` section into a complete GlazeWM config document.
 pub fn render(cfg: &Config) -> anyhow::Result<String> {
     let wm = &cfg.wm;
@@ -428,6 +490,28 @@ action = "float""#,
         let out = render(&parse("")).unwrap();
         let doc: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
         assert!(doc.get("window_rules").is_some());
+    }
+
+    #[test]
+    fn a_refused_connection_means_not_running_not_broken() {
+        // This is the exact wording GlazeWM's CLI produces with no instance up.
+        let stderr = "Error: Failed to connect to IPC server.\n\nCaused by:\n    0: IO error: \
+                      No connection could be made because the target machine actively refused \
+                      it. (os error 10061)";
+        assert_eq!(classify(false, stderr), Reload::NotRunning);
+    }
+
+    #[test]
+    fn success_is_success() {
+        assert_eq!(classify(true, ""), Reload::Done);
+    }
+
+    #[test]
+    fn an_unrecognised_failure_is_not_silently_swallowed() {
+        assert!(matches!(
+            classify(false, "some other catastrophe"),
+            Reload::Unavailable(_)
+        ));
     }
 
     #[test]

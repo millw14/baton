@@ -28,6 +28,7 @@ fn main() {
         ["apply", "--yes"] | ["apply", "-y"] => cmd_apply(true),
         ["rollback"] => cmd_rollback(false),
         ["rollback", "--yes"] | ["rollback", "-y"] => cmd_rollback(true),
+        ["reload"] => cmd_reload(),
         [] | ["-h"] | ["--help"] | ["help"] => {
             print_help();
             Ok(())
@@ -58,9 +59,13 @@ USAGE
   baton diff          show what apply would change, without doing it
   baton apply [-y]    make the desktop match the config
   baton rollback [-y] undo the last apply, exactly
+  baton reload        tell the running window manager to re-read its config
 
 Every value apply writes is read first and journaled, so rollback restores
 what was there before -- including deleting values that did not exist.
+
+apply and rollback reload the window manager for you, so there is no manual
+step afterwards.
 
 CONFIG
   {config}
@@ -196,14 +201,55 @@ fn cmd_apply(assume_yes: bool) -> Result<()> {
     }
 
     println!("applied {applied} change(s)");
-    if changes.iter().any(|c| matches!(c, Change::File { .. })) {
-        println!("note: restart or reload your window manager to pick up its new config");
-    }
+    settle(&cfg, &changes);
     if touched_registry {
         println!("note: some shell settings only fully apply after signing out and back in");
     }
     println!("undo with: baton rollback");
     Ok(())
+}
+
+/// Whether a plan rewrote the window manager's own config, in which case the
+/// running WM is now out of date until it re-reads it.
+fn touched_wm_config(cfg: &Config, changes: &[Change]) -> bool {
+    if cfg.wm.backend != config::Backend::Glazewm {
+        return false;
+    }
+    let target = glazewm::config_path().to_string_lossy().into_owned();
+    changes
+        .iter()
+        .any(|c| matches!(c, Change::File { path, .. } if *path == target))
+}
+
+/// Push the new config into the running window manager, so `apply` is the last
+/// step rather than the second to last.
+fn settle(cfg: &Config, changes: &[Change]) {
+    if !touched_wm_config(cfg, changes) {
+        return;
+    }
+    match glazewm::reload() {
+        glazewm::Reload::Done => println!("reloaded GlazeWM"),
+        glazewm::Reload::NotRunning => {
+            println!("GlazeWM is not running; its config is ready for when you start it")
+        }
+        glazewm::Reload::Unavailable(why) => {
+            println!("could not reload GlazeWM ({why}); restart it to pick up the new config")
+        }
+    }
+}
+
+fn cmd_reload() -> Result<()> {
+    match glazewm::reload() {
+        glazewm::Reload::Done => {
+            println!("reloaded GlazeWM");
+            Ok(())
+        }
+        glazewm::Reload::NotRunning => {
+            println!("GlazeWM is not running");
+            Ok(())
+        }
+        glazewm::Reload::Unavailable(why) => Err(anyhow::anyhow!(why)),
+    }
 }
 
 fn cmd_rollback(assume_yes: bool) -> Result<()> {
@@ -240,6 +286,10 @@ fn cmd_rollback(assume_yes: bool) -> Result<()> {
     if failures == 0 {
         plan::clear_journal();
         println!("rolled back {} change(s)", changes.len());
+        // The WM is now running a config that no longer exists on disk.
+        if let Ok((cfg, _)) = load() {
+            settle(&cfg, &changes);
+        }
     } else {
         // Keep the journal: the user should be able to try again.
         eprintln!("baton: {failures} change(s) could not be reverted; journal kept");

@@ -8,7 +8,7 @@ downstream config, applies the registry settings, and can put all of it back
 exactly as it was.
 
 ```bash
-baton apply       # make the desktop match baton.toml
+baton apply       # make the desktop match baton.toml, and reload the WM
 baton diff        # show what apply would change, without doing it
 baton rollback    # undo the last apply, exactly
 ```
@@ -51,6 +51,14 @@ instead of being retyped in four formats.
 **Nothing is applied without a snapshot.** Every value Baton writes is read
 first and journaled. `rollback` replays the journal. A crash mid-apply leaves a
 journal on disk that the next run finishes undoing.
+
+The journal holds **one** apply, not a history. `rollback` undoes the most
+recent `apply` and no further, so applying twice and rolling back once leaves
+you at the first apply, not at your original desktop.
+
+**`apply` finishes the job.** It reloads the window manager over its own IPC,
+so there is no "now restart it" step. If the WM is not running, that is not an
+error: the config is simply ready for when you start it.
 
 **No system files are patched.** Documented config files, the registry, and
 each tool's own IPC. Windows Update can't break it.
