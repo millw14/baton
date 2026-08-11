@@ -5,7 +5,7 @@
 //! binary, so a bad config produces no console output at all and it simply
 //! dies -- the errors go to `~/.glzr/glazewm/errors.log`.
 
-use crate::config::Config;
+use crate::config::{Config, Rule, RuleAction};
 use serde::Serialize;
 use std::path::PathBuf;
 
@@ -16,7 +16,33 @@ struct GlazeConfig {
     window_effects: WindowEffects,
     window_behavior: WindowBehavior,
     workspaces: Vec<Workspace>,
+    window_rules: Vec<WindowRule>,
     keybindings: Vec<Keybinding>,
+}
+
+#[derive(Serialize)]
+struct WindowRule {
+    commands: Vec<String>,
+    /// GlazeWM ORs the entries in this list. Baton emits exactly one entry per
+    /// rule, whose fields AND together, which is the intuitive reading of
+    /// "exe = x, title = y".
+    #[serde(rename = "match")]
+    matchers: Vec<Matcher>,
+}
+
+#[derive(Serialize, Default)]
+struct Matcher {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    window_process: Option<Pattern>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    window_class: Option<Pattern>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    window_title: Option<Pattern>,
+}
+
+#[derive(Serialize)]
+struct Pattern {
+    regex: String,
 }
 
 #[derive(Serialize)]
@@ -98,6 +124,67 @@ struct Keybinding {
     bindings: Vec<String>,
 }
 
+/// Translate one of Baton's matcher values into a GlazeWM regex.
+///
+/// Always a regex, never `equals`, so that matching is uniformly
+/// case-insensitive: `(?i)^chrome$` is exactly a case-insensitive equals, and
+/// `*` becomes `.*` without the user needing to know regex.
+fn to_regex(pattern: &str) -> String {
+    let mut out = String::from("(?i)^");
+    for ch in pattern.chars() {
+        match ch {
+            '*' => out.push_str(".*"),
+            // Anything with meaning in a regex has to survive as a literal.
+            c if r"\.+?()|[]{}^$".contains(c) => {
+                out.push('\\');
+                out.push(c);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('$');
+    out
+}
+
+/// GlazeWM matches on the process name without its extension, but people write
+/// "chrome.exe" out of habit. Accept both.
+fn process_name(exe: &str) -> &str {
+    exe.strip_suffix(".exe")
+        .or_else(|| exe.strip_suffix(".EXE"))
+        .unwrap_or(exe)
+}
+
+fn render_rule(rule: &Rule) -> WindowRule {
+    let mut commands = Vec::new();
+    match rule.action {
+        Some(RuleAction::Ignore) => commands.push("ignore".to_string()),
+        Some(RuleAction::Float) => commands.push("set-floating".to_string()),
+        Some(RuleAction::Tile) => commands.push("set-tiling".to_string()),
+        None => {}
+    }
+    if let Some(ws) = &rule.workspace {
+        commands.push(format!("move --workspace {ws}"));
+    }
+
+    WindowRule {
+        commands,
+        matchers: vec![Matcher {
+            window_process: rule
+                .exe
+                .as_deref()
+                .map(|e| Pattern { regex: to_regex(process_name(e)) }),
+            window_class: rule
+                .class
+                .as_deref()
+                .map(|c| Pattern { regex: to_regex(c) }),
+            window_title: rule
+                .title
+                .as_deref()
+                .map(|t| Pattern { regex: to_regex(t) }),
+        }],
+    }
+}
+
 pub fn config_path() -> PathBuf {
     let home = std::env::var("USERPROFILE").unwrap_or_default();
     PathBuf::from(home).join(".glzr").join("glazewm").join("config.yaml")
@@ -152,6 +239,7 @@ pub fn render(cfg: &Config) -> anyhow::Result<String> {
             .iter()
             .map(|name| Workspace { name: name.clone() })
             .collect(),
+        window_rules: cfg.rules.iter().map(render_rule).collect(),
         keybindings: wm
             .keys
             .iter()
@@ -256,6 +344,90 @@ workspaces = ["web", "code", "chat"]"#);
         let parsed: serde_yaml::Value =
             serde_yaml::from_str(&out).expect("rendered config must be valid YAML");
         assert!(parsed.get("general").is_some());
+    }
+
+    #[test]
+    fn plain_names_become_case_insensitive_exact_matches() {
+        assert_eq!(to_regex("chrome"), "(?i)^chrome$");
+    }
+
+    #[test]
+    fn wildcards_become_regex_without_the_user_writing_regex() {
+        assert_eq!(to_regex("*Settings*"), "(?i)^.*Settings.*$");
+    }
+
+    #[test]
+    fn regex_metacharacters_in_a_name_stay_literal() {
+        // "#32770" is the real Win32 dialog class; a title with (), [] or . is
+        // common. None of it may be interpreted as regex syntax.
+        assert_eq!(to_regex("a.b"), r"(?i)^a\.b$");
+        assert_eq!(to_regex("x(1)"), r"(?i)^x\(1\)$");
+        assert_eq!(to_regex("a+b[c]"), r"(?i)^a\+b\[c\]$");
+    }
+
+    #[test]
+    fn exe_suffix_is_optional() {
+        assert_eq!(process_name("chrome.exe"), "chrome");
+        assert_eq!(process_name("chrome"), "chrome");
+        assert_eq!(process_name("Taskmgr.EXE"), "Taskmgr");
+    }
+
+    #[test]
+    fn actions_map_to_glazewm_commands() {
+        let cfg = parse(
+            r#"[[rules]]
+exe = "Taskmgr.exe"
+action = "float"
+
+[[rules]]
+class = "Progman"
+action = "ignore""#,
+        );
+        let out = render(&cfg).unwrap();
+        assert!(out.contains("set-floating"), "{out}");
+        assert!(out.contains("- ignore"), "{out}");
+        assert!(out.contains("(?i)^Taskmgr$"), "{out}");
+        assert!(out.contains("(?i)^Progman$"), "{out}");
+    }
+
+    #[test]
+    fn a_workspace_rule_emits_a_move_command() {
+        let cfg = parse(
+            r#"[wm]
+workspaces = ["1", "2"]
+
+[[rules]]
+exe = "chrome"
+workspace = "2""#,
+        );
+        let out = render(&cfg).unwrap();
+        assert!(out.contains("move --workspace 2"), "{out}");
+    }
+
+    #[test]
+    fn several_matchers_on_one_rule_and_together() {
+        // One match entry with two fields is an AND in GlazeWM. Two entries
+        // would be an OR, which is not what "exe = x, title = y" means.
+        let cfg = parse(
+            r#"[[rules]]
+exe = "ApplicationFrameHost"
+title = "*Settings*"
+action = "float""#,
+        );
+        let out = render(&cfg).unwrap();
+        let rules: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        let matchers = rules["window_rules"][0]["match"].as_sequence().unwrap();
+        assert_eq!(matchers.len(), 1, "must be one ANDed entry, not two ORed");
+        assert!(matchers[0].get("window_process").is_some());
+        assert!(matchers[0].get("window_title").is_some());
+        assert!(matchers[0].get("window_class").is_none(), "unset matchers omitted");
+    }
+
+    #[test]
+    fn no_rules_still_emits_the_key_glazewm_expects() {
+        let out = render(&parse("")).unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+        assert!(doc.get("window_rules").is_some());
     }
 
     #[test]

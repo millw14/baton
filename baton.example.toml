@@ -50,6 +50,45 @@ outer = 10
 
 
 # --------------------------------------------------------------------------
+# Per-window rules, applied in order.
+#
+# Matchers: exe, class, title. Every matcher you set must match (AND); the
+# ones you leave out match anything. Matching is case-insensitive and "*" is
+# a wildcard, so you never have to write a regex. A trailing ".exe" on `exe`
+# is optional.
+#
+# action = "tile" | "float" | "ignore"
+#   float  keeps the window's own size and position
+#   ignore leaves the window completely alone -- use it for overlays and
+#          anything that must never be tiled
+# workspace = "<name>" sends matching windows there when they appear.
+# --------------------------------------------------------------------------
+
+# Dialogs are the wrong shape for tiling.
+[[rules]]
+class = "#32770"
+action = "float"
+
+[[rules]]
+exe = "Taskmgr"
+action = "float"
+
+# Overlays that draw over the whole screen must never be managed.
+[[rules]]
+class = "CEF-OSC-WIDGET"
+action = "ignore"
+
+[[rules]]
+title = "*NVIDIA GeForce Overlay*"
+action = "ignore"
+
+# Example: keep your browser on workspace 2.
+# [[rules]]
+# exe = "chrome.exe"
+# workspace = "2"
+
+
+# --------------------------------------------------------------------------
 # Shell and theme settings, applied through the registry.
 #
 # Only the keys you write here are ever touched. Delete a line and Baton

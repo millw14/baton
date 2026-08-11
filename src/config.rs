@@ -25,6 +25,69 @@ pub struct Config {
     /// Shell and theme settings applied through the registry.
     #[serde(default)]
     pub windows: WindowsSettings,
+    /// Per-window overrides, in order. Rendered into the backend's own rules.
+    #[serde(default)]
+    pub rules: Vec<Rule>,
+}
+
+/// A per-window override.
+///
+/// Matchers that are set must *all* match (AND). An omitted matcher matches
+/// anything, so a rule with only `exe` applies to every window of that program.
+/// Values are matched case-insensitively, and `*` works as a wildcard.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Rule {
+    /// Process name. A trailing ".exe" is optional and ignored.
+    #[serde(default)]
+    pub exe: Option<String>,
+    #[serde(default)]
+    pub class: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub action: Option<RuleAction>,
+    /// Send matching windows to this workspace when they appear.
+    #[serde(default)]
+    pub workspace: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RuleAction {
+    /// Tile it, the normal behaviour.
+    Tile,
+    /// Track it but leave its size and position alone.
+    Float,
+    /// Pretend it does not exist. Use for shell surfaces and overlays.
+    Ignore,
+}
+
+impl Rule {
+    /// A rule with no matcher would silently apply to every window, so we
+    /// require at least one.
+    fn describe_position(index: usize) -> String {
+        format!("rules[{index}]")
+    }
+
+    fn validate(&self, index: usize, workspaces: &[String]) -> Result<()> {
+        let at = Rule::describe_position(index);
+        anyhow::ensure!(
+            self.exe.is_some() || self.class.is_some() || self.title.is_some(),
+            "{at} has no exe, class or title to match on, so it would apply to every window"
+        );
+        anyhow::ensure!(
+            self.action.is_some() || self.workspace.is_some(),
+            "{at} matches windows but does nothing; give it an action or a workspace"
+        );
+        if let Some(ws) = &self.workspace {
+            anyhow::ensure!(
+                workspaces.iter().any(|w| w == ws),
+                "{at} sends windows to workspace {ws:?}, which is not in wm.workspaces"
+            );
+        }
+        Ok(())
+    }
 }
 
 #[allow(dead_code)]
@@ -172,6 +235,9 @@ impl Config {
         }
         if let Some(c) = &self.windows.accent_color {
             validate_colour(c).context("windows.accent_color")?;
+        }
+        for (i, rule) in self.rules.iter().enumerate() {
+            rule.validate(i, &self.wm.workspaces)?;
         }
         Ok(())
     }
@@ -378,6 +444,51 @@ workspaces = ["1", "2", "1"]"#)
     #[test]
     fn empty_workspaces_are_rejected() {
         assert!(Config::parse("[wm]\nworkspaces = []").is_err());
+    }
+
+    #[test]
+    fn a_rule_with_no_matcher_is_rejected() {
+        // Otherwise it silently applies to every window on the desktop.
+        let err = Config::parse("[[rules]]\naction = \"ignore\"").unwrap_err();
+        assert!(format!("{err:#}").contains("every window"));
+    }
+
+    #[test]
+    fn a_rule_that_does_nothing_is_rejected() {
+        let err = Config::parse("[[rules]]\nexe = \"chrome\"").unwrap_err();
+        assert!(format!("{err:#}").contains("does nothing"));
+    }
+
+    #[test]
+    fn a_rule_naming_an_undeclared_workspace_is_rejected() {
+        let err = Config::parse(
+            r#"[wm]
+workspaces = ["1", "2"]
+[[rules]]
+exe = "chrome"
+workspace = "9""#,
+        )
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("rules[0]"), "should say which rule: {msg}");
+        assert!(msg.contains("wm.workspaces"), "{msg}");
+    }
+
+    #[test]
+    fn rules_keep_their_declared_order() {
+        let cfg = Config::parse(
+            r#"[[rules]]
+exe = "first"
+action = "ignore"
+
+[[rules]]
+exe = "second"
+action = "float""#,
+        )
+        .unwrap();
+        assert_eq!(cfg.rules.len(), 2);
+        assert_eq!(cfg.rules[0].exe.as_deref(), Some("first"));
+        assert_eq!(cfg.rules[1].action, Some(RuleAction::Float));
     }
 
     #[test]
