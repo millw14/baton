@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    #[allow(dead_code)]
     #[serde(default)]
     pub meta: Meta,
     /// Named colours, referenced elsewhere as "@palette.<name>".
