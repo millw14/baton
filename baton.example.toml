@@ -1,0 +1,64 @@
+# baton - one declarative config for your whole Windows desktop
+#
+# Lives at ~/.config/baton/baton.toml
+# Validate with `baton check`, preview with `baton diff`, apply with `baton apply`.
+
+[meta]
+name = "my desktop"
+
+# Declare every colour once. Reference it anywhere below as "@palette.<name>"
+# and Baton substitutes it before handing the value to a target. Change a
+# colour here and it propagates to every tool at once.
+[palette]
+bg       = "#24273a"
+fg       = "#cad3f5"
+accent   = "#8aadf4"
+inactive = "#494d64"
+urgent   = "#ed8796"
+
+
+# --------------------------------------------------------------------------
+# Window management. Rendered into the backend's own config format.
+# backend = "glazewm" | "winrice" | "none"
+# --------------------------------------------------------------------------
+[wm]
+backend = "glazewm"
+workspaces = ["1", "2", "3", "4", "5"]
+focus_follows_cursor = false
+focused_border = "@palette.accent"
+
+[wm.gaps]
+inner = 10
+outer = 10
+
+[wm.keys]
+"alt+h" = "focus --direction left"
+"alt+j" = "focus --direction down"
+"alt+k" = "focus --direction up"
+"alt+l" = "focus --direction right"
+"alt+shift+h" = "move --direction left"
+"alt+shift+j" = "move --direction down"
+"alt+shift+k" = "move --direction up"
+"alt+shift+l" = "move --direction right"
+"alt+1" = "focus --workspace 1"
+"alt+2" = "focus --workspace 2"
+"alt+3" = "focus --workspace 3"
+"alt+4" = "focus --workspace 4"
+"alt+5" = "focus --workspace 5"
+"alt+shift+q" = "close"
+"alt+enter" = "shell-exec powershell.exe"
+
+
+# --------------------------------------------------------------------------
+# Shell and theme settings, applied through the registry.
+#
+# Only the keys you write here are ever touched. Delete a line and Baton
+# stops managing that setting; it does not reset it.
+# --------------------------------------------------------------------------
+[windows]
+dark_mode = true            # system UI (taskbar, Start)
+app_dark_mode = true        # apps that honour the app theme
+show_file_extensions = true
+show_hidden_files = false
+taskbar_small_icons = false
+accent_color = "@palette.accent"
