@@ -7,6 +7,7 @@ mod config;
 mod glazewm;
 mod plan;
 mod registry;
+mod zebar;
 
 use anyhow::{Context, Result};
 use config::Config;
@@ -113,6 +114,11 @@ fn cmd_check() -> Result<()> {
         cfg.wm.keys.len()
     );
     println!("  windows    {} setting(s) managed", managed_count(&cfg));
+    println!(
+        "  bar        backend {:?}, {} widget(s)",
+        cfg.bar.backend,
+        cfg.bar.widgets.len()
+    );
     Ok(())
 }
 
@@ -221,19 +227,40 @@ fn touched_wm_config(cfg: &Config, changes: &[Change]) -> bool {
         .any(|c| matches!(c, Change::File { path, .. } if *path == target))
 }
 
-/// Push the new config into the running window manager, so `apply` is the last
-/// step rather than the second to last.
+fn touched(changes: &[Change], target: std::path::PathBuf) -> bool {
+    let target = target.to_string_lossy().into_owned();
+    changes
+        .iter()
+        .any(|c| matches!(c, Change::File { path, .. } if *path == target))
+}
+
+/// Push the new config into the running tools, so `apply` is the last step
+/// rather than the second to last.
 fn settle(cfg: &Config, changes: &[Change]) {
-    if !touched_wm_config(cfg, changes) {
-        return;
-    }
-    match glazewm::reload() {
-        glazewm::Reload::Done => println!("reloaded GlazeWM"),
-        glazewm::Reload::NotRunning => {
-            println!("GlazeWM is not running; its config is ready for when you start it")
+    if touched_wm_config(cfg, changes) {
+        match glazewm::reload() {
+            glazewm::Reload::Done => println!("reloaded GlazeWM"),
+            glazewm::Reload::NotRunning => {
+                println!("GlazeWM is not running; its config is ready for when you start it")
+            }
+            glazewm::Reload::Unavailable(why) => {
+                println!("could not reload GlazeWM ({why}); restart it to pick up the new config")
+            }
         }
-        glazewm::Reload::Unavailable(why) => {
-            println!("could not reload GlazeWM ({why}); restart it to pick up the new config")
+    }
+
+    // Zebar reads its startup list only at launch, so this is a restart rather
+    // than a reload. The palette stylesheet alone does not need one: a widget
+    // that imports it picks it up on its own refresh.
+    if cfg.bar.backend == config::BarBackend::Zebar && touched(changes, zebar::settings_path()) {
+        match zebar::restart() {
+            zebar::Restart::Done => println!("restarted Zebar"),
+            zebar::Restart::NotRunning => {
+                println!("Zebar is not running; its settings are ready for when you start it")
+            }
+            zebar::Restart::Unavailable(why) => {
+                println!("could not restart Zebar ({why}); restart it to pick up the new settings")
+            }
         }
     }
 }

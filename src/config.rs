@@ -28,6 +28,43 @@ pub struct Config {
     /// Per-window overrides, in order. Rendered into the backend's own rules.
     #[serde(default)]
     pub rules: Vec<Rule>,
+    #[serde(default)]
+    pub bar: Bar,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Bar {
+    #[serde(default)]
+    pub backend: BarBackend,
+    /// Which widgets launch with the bar. Empty means Baton leaves the bar's
+    /// startup list alone entirely.
+    #[serde(default)]
+    pub widgets: Vec<Widget>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BarBackend {
+    /// Manage no status bar. The default: a bar is opt-in.
+    #[default]
+    None,
+    Zebar,
+}
+
+/// One entry in the bar's startup list. Zebar addresses widgets as a
+/// (pack, widget, preset) triple.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Widget {
+    pub pack: String,
+    pub widget: String,
+    #[serde(default = "d_preset")]
+    pub preset: String,
+}
+
+fn d_preset() -> String {
+    "default".into()
 }
 
 /// A per-window override.
@@ -238,6 +275,16 @@ impl Config {
         }
         for (i, rule) in self.rules.iter().enumerate() {
             rule.validate(i, &self.wm.workspaces)?;
+        }
+        anyhow::ensure!(
+            self.bar.backend != BarBackend::None || self.bar.widgets.is_empty(),
+            "bar.widgets is set but bar.backend is \"none\", so nothing would happen"
+        );
+        for (i, w) in self.bar.widgets.iter().enumerate() {
+            anyhow::ensure!(
+                !w.pack.trim().is_empty() && !w.widget.trim().is_empty(),
+                "bar.widgets[{i}] needs both a pack and a widget"
+            );
         }
         Ok(())
     }

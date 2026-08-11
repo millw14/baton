@@ -50,6 +50,31 @@ outer = 10
 
 
 # --------------------------------------------------------------------------
+# Status bar.  backend = "zebar" | "none"
+#
+# Zebar gets its widgets from marketplace packs, so what baton owns here is
+# which widgets launch -- not what they look like, since pack internals are
+# replaced on every pack update.
+#
+# For theming, baton writes your palette to
+# ~/.glzr/zebar/baton-palette.css as CSS custom properties. Import it from
+# your own widget pack to pick up every colour:
+#
+#   @import '../../baton-palette.css';
+#   .bar { background: var(--bg); color: var(--fg); }
+#
+# Leave backend = "none" (the default) and baton will not touch your bar.
+# --------------------------------------------------------------------------
+[bar]
+backend = "zebar"
+
+[[bar.widgets]]
+pack = "glzr-io.starter"
+widget = "vanilla"
+preset = "default"
+
+
+# --------------------------------------------------------------------------
 # Per-window rules, applied in order.
 #
 # Matchers: exe, class, title. Every matcher you set must match (AND); the

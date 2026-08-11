@@ -33,8 +33,22 @@ Early. The config engine and the GlazeWM + registry targets are the v1 scope.
 | --- | --- | --- |
 | `glazewm` | `~/.glzr/glazewm/config.yaml` + WebSocket IPC on 6123 | v1 |
 | `windows` | Shell and theme settings, mostly `HKCU` | v1 |
-| `bar` | YASB / zebar config | planned |
+| `bar` | Zebar `settings.json`, plus the palette as CSS | v1 |
 | `windhawk` | Undocumented `HKLM` store, needs admin | best-effort, later |
+
+The bar target is deliberately narrow. Zebar gets its widgets from marketplace
+packs, so what Baton owns is **which widgets launch** — not what they look
+like, since pack internals are replaced on every pack update. For theming,
+Baton writes your palette to `~/.glzr/zebar/baton-palette.css` as CSS custom
+properties, which your own widget pack can import:
+
+```css
+@import '../../baton-palette.css';
+.bar { background: var(--bg); color: var(--fg); }
+```
+
+That is the honest way to get one palette across the desktop without fighting
+the marketplace. Baton does not claim to restyle packs it does not own.
 
 Windhawk is deliberately last. It has no orchestration API — its whole CLI is
 `-tray-only`, `-exit`, `-restart`, `-safe-mode` — so driving it means writing an

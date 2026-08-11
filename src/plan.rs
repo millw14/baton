@@ -5,8 +5,8 @@
 //! for free: `diff` is just the plan printed, `apply` is the plan executed, and
 //! `rollback` is the plan executed backwards.
 
-use crate::config::{Config, WindowsSettings};
-use crate::{glazewm, registry};
+use crate::config::{BarBackend, Config, WindowsSettings};
+use crate::{glazewm, registry, zebar};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -148,20 +148,35 @@ fn hex_to_abgr(hex: &str) -> Option<u32> {
     Some(0xFF00_0000 | (b << 16) | (g << 8) | r)
 }
 
+/// Pair a target path with its rendered contents, snapshotting whatever is
+/// there now so the change knows how to undo itself.
+fn file_change(path: PathBuf, after: String) -> Change {
+    let before = std::fs::read_to_string(&path).ok();
+    Change::File {
+        path: path.to_string_lossy().into_owned(),
+        before,
+        after,
+    }
+}
+
 /// Work out everything that would have to change for the desktop to match
 /// `cfg`. Reads current state; writes nothing.
 pub fn build(cfg: &Config) -> Result<Vec<Change>> {
     let mut changes = Vec::new();
 
     if cfg.wm.backend == crate::config::Backend::Glazewm {
-        let path = glazewm::config_path();
-        let after = glazewm::render(cfg)?;
-        let before = std::fs::read_to_string(&path).ok();
-        changes.push(Change::File {
-            path: path.to_string_lossy().into_owned(),
-            before,
-            after,
-        });
+        changes.push(file_change(glazewm::config_path(), glazewm::render(cfg)?));
+    }
+
+    if cfg.bar.backend == BarBackend::Zebar {
+        changes.push(file_change(zebar::settings_path(), zebar::render_settings(cfg)?));
+        // Only worth writing if there is actually a palette to export.
+        if !cfg.palette.is_empty() {
+            changes.push(file_change(
+                zebar::palette_css_path(),
+                zebar::render_palette_css(cfg),
+            ));
+        }
     }
 
     for (subkey, name, after) in desired_registry(&cfg.windows) {
