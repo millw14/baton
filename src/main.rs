@@ -8,6 +8,7 @@ mod glazewm;
 mod history;
 mod plan;
 mod registry;
+mod status;
 mod zebar;
 
 use anyhow::{Context, Result};
@@ -35,6 +36,7 @@ fn main() {
         | ["rollback", "--yes", "--all"] | ["rollback", "-y", "--all"] => {
             cmd_rollback(true, true)
         }
+        ["status"] => cmd_status(),
         ["history"] => cmd_history(),
         ["history", "--clear"] => cmd_history_clear(false),
         ["history", "--clear", "--yes"] | ["history", "--clear", "-y"] => {
@@ -68,6 +70,7 @@ USAGE
   baton init          write a starter config
   baton check         validate the config and resolve every palette reference
   baton show          print the fully resolved config
+  baton status        what is applied now, and whether anything has drifted
   baton diff          show what apply would change, without doing it
   baton apply [-y]    make the desktop match the config
   baton rollback [-y] undo the most recent apply, exactly
@@ -390,6 +393,100 @@ fn cmd_rollback(assume_yes: bool, all: bool) -> Result<()> {
     if history::list().is_empty() {
         println!("history is empty; the desktop is back to before baton touched it");
     }
+    Ok(())
+}
+
+fn cmd_status() -> Result<()> {
+    let path = config::config_path();
+    let cfg = if path.exists() {
+        match Config::load(&path) {
+            Ok(cfg) => {
+                println!("config    {} (valid)", path.display());
+                Some(cfg)
+            }
+            Err(e) => {
+                println!("config    {} (INVALID)", path.display());
+                println!("          {e:#}");
+                None
+            }
+        }
+    } else {
+        println!("config    {} (missing - run `baton init`)", path.display());
+        None
+    };
+
+    let entries = history::list();
+    match entries.last() {
+        None => println!("history   nothing applied yet"),
+        Some(last) => println!(
+            "history   {}, last {}",
+            history::applies(entries.len()),
+            history::ago_now(last.applied_at)
+        ),
+    }
+
+    // What Baton wrote, and whether it is still that way.
+    let owned = status::last_written(&entries);
+    if owned.is_empty() {
+        println!("\nbaton is not currently managing anything");
+    } else {
+        println!("\nmanaged state:");
+        let mut drifted = 0usize;
+        for m in &owned {
+            let (marker, note) = match status::check(m) {
+                status::Drift::InSync => ("ok   ", ""),
+                status::Drift::Changed => {
+                    drifted += 1;
+                    ("DRIFT", "  changed since baton wrote it")
+                }
+                status::Drift::Missing => {
+                    drifted += 1;
+                    ("GONE ", "  no longer exists")
+                }
+            };
+            println!("  {marker} {}{note}", m.label());
+        }
+        if drifted > 0 {
+            println!(
+                "\n{} of {} managed item(s) no longer match what baton wrote.",
+                drifted,
+                owned.len()
+            );
+            println!("`baton apply` will overwrite them. `baton rollback` restores the");
+            println!("value from before the apply, not your edit -- copy it out first.");
+        }
+    }
+
+    // Pending work, i.e. the config has moved on from the desktop.
+    if let Some(cfg) = &cfg {
+        match plan::build(cfg) {
+            Ok(changes) if changes.is_empty() => {
+                println!("\npending   none - the desktop matches the config")
+            }
+            Ok(changes) => println!(
+                "\npending   {} - run `baton diff` to see them",
+                history::changes(changes.len())
+            ),
+            Err(e) => println!("\npending   could not be determined: {e:#}"),
+        }
+    }
+
+    println!("\ntools:");
+    let wm = match cfg.as_ref().map(|c| c.wm.backend) {
+        Some(config::Backend::Glazewm) => {
+            if glazewm::is_running() { "running" } else { "not running" }
+        }
+        Some(config::Backend::Winrice) => "not managed by baton",
+        _ => "not configured",
+    };
+    println!("  GlazeWM   {wm}");
+    let bar = match cfg.as_ref().map(|c| c.bar.backend) {
+        Some(config::BarBackend::Zebar) => {
+            if zebar::is_running() { "running" } else { "not running" }
+        }
+        _ => "not configured",
+    };
+    println!("  Zebar     {bar}");
     Ok(())
 }
 

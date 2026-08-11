@@ -10,6 +10,7 @@ exactly as it was.
 ```bash
 baton apply       # make the desktop match baton.toml, and reload the WM
 baton diff        # show what apply would change, without doing it
+baton status      # what is applied now, and whether anything has drifted
 baton rollback    # undo the last apply, exactly
 ```
 
@@ -85,6 +86,23 @@ error: the config is simply ready for when you start it.
 
 **No system files are patched.** Documented config files, the registry, and
 each tool's own IPC. Windows Update can't break it.
+
+**Drift is reported, not silently overwritten.** `diff` asks "what would apply
+do?" by comparing the desktop to the config. `status` asks a different
+question — "has anything changed what Baton wrote?" — by comparing against the
+newest history entry that touched each thing. That matters when you hand-edit
+a generated file: a diff shows a pending change but not *why*, and the next
+apply destroys your edit without comment.
+
+```
+managed state:
+  ok    C:\Users\1\.glzr\zebar\settings.json
+  DRIFT C:\Users\1\.glzr\glazewm\config.yaml  changed since baton wrote it
+
+1 of 2 managed item(s) no longer match what baton wrote.
+`baton apply` will overwrite them. `baton rollback` restores the
+value from before the apply, not your edit -- copy it out first.
+```
 
 ## Related
 

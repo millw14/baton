@@ -123,7 +123,7 @@ pub enum Restart {
     Unavailable(&'static str),
 }
 
-fn is_running() -> bool {
+pub fn is_running() -> bool {
     // Zebar has no "is it up" query that does not need it up, so ask the OS.
     std::process::Command::new("tasklist")
         .args(["/FI", "IMAGENAME eq zebar.exe", "/NH"])

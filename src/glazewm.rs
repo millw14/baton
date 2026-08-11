@@ -240,6 +240,15 @@ fn classify(success: bool, stderr: &str) -> Reload {
     }
 }
 
+/// Read-only liveness check: a query that needs no side effects.
+pub fn is_running() -> bool {
+    std::process::Command::new(cli_path())
+        .args(["query", "app-metadata"])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 /// Ask a running GlazeWM to re-read its config.
 pub fn reload() -> Reload {
     let output = std::process::Command::new(cli_path())
