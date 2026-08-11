@@ -192,39 +192,6 @@ pub fn build(cfg: &Config) -> Result<Vec<Change>> {
     Ok(changes)
 }
 
-// ---------------------------------------------------------------------------
-// Journal
-// ---------------------------------------------------------------------------
-
-fn journal_path() -> PathBuf {
-    crate::config::state_dir().join("last-apply.json")
-}
-
-/// Written *before* the first change lands, so a crash mid-apply still leaves
-/// a complete record of what was about to happen.
-pub fn save_journal(changes: &[Change]) -> Result<()> {
-    let dir = crate::config::state_dir();
-    std::fs::create_dir_all(&dir)
-        .with_context(|| format!("creating {}", dir.display()))?;
-    let text = serde_json::to_string_pretty(changes)?;
-    let tmp = dir.join("last-apply.json.tmp");
-    std::fs::write(&tmp, text).context("writing journal")?;
-    std::fs::rename(&tmp, journal_path()).context("committing journal")?;
-    Ok(())
-}
-
-pub fn load_journal() -> Result<Vec<Change>> {
-    let path = journal_path();
-    anyhow::ensure!(path.exists(), "nothing to roll back (no journal at {})", path.display());
-    let text = std::fs::read_to_string(&path)
-        .with_context(|| format!("reading {}", path.display()))?;
-    serde_json::from_str(&text).context("journal is corrupt")
-}
-
-pub fn clear_journal() {
-    let _ = std::fs::remove_file(journal_path());
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,7 +317,7 @@ mod tests {
     }
 
     #[test]
-    fn changes_survive_a_journal_round_trip() {
+    fn changes_survive_a_serialisation_round_trip() {
         let changes = vec![
             Change::File { path: "a.yaml".into(), before: None, after: "x".into() },
             Change::Dword {

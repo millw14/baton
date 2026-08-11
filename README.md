@@ -66,9 +66,18 @@ instead of being retyped in four formats.
 first and journaled. `rollback` replays the journal. A crash mid-apply leaves a
 journal on disk that the next run finishes undoing.
 
-The journal holds **one** apply, not a history. `rollback` undoes the most
-recent `apply` and no further, so applying twice and rolling back once leaves
-you at the first apply, not at your original desktop.
+Every apply is its own history entry, so `rollback` can be run repeatedly to
+step back through them, and `rollback --all` returns the desktop to before
+Baton ever touched it. Entries are always reverted newest-first: undoing an
+older one while a newer one sits on top of the same value would restore the
+wrong thing.
+
+```bash
+baton history           # what has been applied, newest first
+baton rollback          # undo the most recent apply
+baton rollback --all    # undo everything
+baton history --clear   # keep the current state, forget how you got here
+```
 
 **`apply` finishes the job.** It reloads the window manager over its own IPC,
 so there is no "now restart it" step. If the WM is not running, that is not an

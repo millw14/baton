@@ -1,10 +1,11 @@
-//! baton - one declarative config for your whole Windows desktop.
+﻿//! baton - one declarative config for your whole Windows desktop.
 //!
 //! Baton does not manage windows or draw a bar. It conducts the tools that
 //! already do, from a single config, and can put everything back.
 
 mod config;
 mod glazewm;
+mod history;
 mod plan;
 mod registry;
 mod zebar;
@@ -27,8 +28,18 @@ fn main() {
         ["diff"] => cmd_diff(),
         ["apply"] => cmd_apply(false),
         ["apply", "--yes"] | ["apply", "-y"] => cmd_apply(true),
-        ["rollback"] => cmd_rollback(false),
-        ["rollback", "--yes"] | ["rollback", "-y"] => cmd_rollback(true),
+        ["rollback"] => cmd_rollback(false, false),
+        ["rollback", "--yes"] | ["rollback", "-y"] => cmd_rollback(true, false),
+        ["rollback", "--all"] => cmd_rollback(false, true),
+        ["rollback", "--all", "--yes"] | ["rollback", "--all", "-y"]
+        | ["rollback", "--yes", "--all"] | ["rollback", "-y", "--all"] => {
+            cmd_rollback(true, true)
+        }
+        ["history"] => cmd_history(),
+        ["history", "--clear"] => cmd_history_clear(false),
+        ["history", "--clear", "--yes"] | ["history", "--clear", "-y"] => {
+            cmd_history_clear(true)
+        }
         ["reload"] => cmd_reload(),
         [] | ["-h"] | ["--help"] | ["help"] => {
             print_help();
@@ -59,11 +70,18 @@ USAGE
   baton show          print the fully resolved config
   baton diff          show what apply would change, without doing it
   baton apply [-y]    make the desktop match the config
-  baton rollback [-y] undo the last apply, exactly
+  baton rollback [-y] undo the most recent apply, exactly
+  baton rollback --all
+                      undo every apply, back to before baton touched anything
+  baton history       list what has been applied, newest first
+  baton history --clear
+                      forget the history WITHOUT undoing it
   baton reload        tell the running window manager to re-read its config
 
-Every value apply writes is read first and journaled, so rollback restores
+Every value apply writes is read first and recorded, so rollback restores
 what was there before -- including deleting values that did not exist.
+Each apply is its own history entry, so rollback can be run repeatedly to
+step back through them.
 
 apply and rollback reload the window manager for you, so there is no manual
 step afterwards.
@@ -147,7 +165,7 @@ fn cmd_diff() -> Result<()> {
         println!("no changes - the desktop already matches the config");
         return Ok(());
     }
-    println!("{} change(s):", changes.len());
+    println!("{}:", history::changes(changes.len()));
     print_plan(&changes);
     println!("\nrun `baton apply` to make them");
     Ok(())
@@ -175,7 +193,7 @@ fn cmd_apply(assume_yes: bool) -> Result<()> {
         return Ok(());
     }
 
-    println!("{} change(s):", changes.len());
+    println!("{}:", history::changes(changes.len()));
     print_plan(&changes);
 
     if !assume_yes && !confirm("\napply these?")? {
@@ -183,16 +201,18 @@ fn cmd_apply(assume_yes: bool) -> Result<()> {
         return Ok(());
     }
 
-    // Journal first. If we die halfway through, rollback still knows the whole
+    // Record first. If we die halfway through, rollback still knows the whole
     // plan and every original value.
-    plan::save_journal(&changes).context("could not journal the plan; nothing applied")?;
+    let entry = history::append(&changes)
+        .context("could not record the plan in history; nothing applied")?;
 
     let mut applied = 0usize;
     for change in &changes {
         if let Err(e) = change.apply() {
             eprintln!("baton: failed on {}: {e:#}", change.describe());
             eprintln!(
-                "baton: {applied} change(s) already made. Run `baton rollback` to undo them."
+                "baton: {} already made. Run `baton rollback` to undo them.",
+                history::changes(applied)
             );
             return Err(e);
         }
@@ -206,7 +226,7 @@ fn cmd_apply(assume_yes: bool) -> Result<()> {
         registry::broadcast_setting_change();
     }
 
-    println!("applied {applied} change(s)");
+    println!("applied {} as apply #{}", history::changes(applied), entry.seq);
     settle(&cfg, &changes);
     if touched_registry {
         println!("note: some shell settings only fully apply after signing out and back in");
@@ -279,17 +299,57 @@ fn cmd_reload() -> Result<()> {
     }
 }
 
-fn cmd_rollback(assume_yes: bool) -> Result<()> {
-    let changes = plan::load_journal()?;
-    if changes.is_empty() {
-        println!("last apply made no changes; nothing to undo");
-        plan::clear_journal();
-        return Ok(());
+/// Undo one entry. Returns how many changes failed, leaving the entry in place
+/// if any did so the user can retry.
+fn revert_entry(entry: &history::Entry) -> usize {
+    // Reverse order, so a change layered on another comes off first.
+    let mut failures = 0usize;
+    for change in entry.changes.iter().rev() {
+        if let Err(e) = change.revert() {
+            eprintln!("baton: could not revert {}: {e:#}", change.describe());
+            failures += 1;
+        }
     }
+    if entry.changes.iter().any(|c| matches!(c, Change::Dword { .. })) {
+        registry::broadcast_setting_change();
+    }
+    failures
+}
 
-    println!("undoing {} change(s):", changes.len());
-    for c in &changes {
-        println!("  revert  {}", c.describe());
+fn cmd_rollback(assume_yes: bool, all: bool) -> Result<()> {
+    let entries = history::list();
+    anyhow::ensure!(!entries.is_empty(), "nothing to roll back");
+
+    // Newest first: an older entry must never be reverted while a newer one
+    // sits on top of the same value.
+    let targets: Vec<history::Entry> = if all {
+        entries.into_iter().rev().collect()
+    } else {
+        vec![entries.into_iter().next_back().unwrap()]
+    };
+
+    let total: usize = targets.iter().map(|e| e.changes.len()).sum();
+    println!(
+        "undoing {} ({}):",
+        history::applies(targets.len()),
+        history::changes(total)
+    );
+    for entry in &targets {
+        println!(
+            "  apply #{} from {}",
+            entry.seq,
+            history::ago_now(entry.applied_at)
+        );
+        for c in &entry.changes {
+            println!("    revert  {}", c.describe());
+        }
+    }
+    let remaining = history::list().len() - targets.len();
+    if remaining > 0 {
+        println!(
+            "\n{} earlier will remain; `--all` undoes everything",
+            history::applies(remaining)
+        );
     }
 
     if !assume_yes && !confirm("\nroll these back?")? {
@@ -297,31 +357,84 @@ fn cmd_rollback(assume_yes: bool) -> Result<()> {
         return Ok(());
     }
 
-    // Reverse order, so a change layered on another comes off first.
-    let mut failures = 0usize;
-    for change in changes.iter().rev() {
-        if let Err(e) = change.revert() {
-            eprintln!("baton: could not revert {}: {e:#}", change.describe());
-            failures += 1;
+    let mut undone = 0usize;
+    for entry in &targets {
+        let failures = revert_entry(entry);
+        if failures > 0 {
+            eprintln!(
+                "baton: {} in apply #{} could not be reverted; \
+                 it has been kept so you can retry",
+                history::changes(failures),
+                entry.seq
+            );
+            anyhow::bail!(
+                "rollback incomplete after undoing {}",
+                history::applies(undone)
+            );
         }
+        history::remove(entry.seq)?;
+        undone += 1;
     }
 
-    if changes.iter().any(|c| matches!(c, Change::Dword { .. })) {
-        registry::broadcast_setting_change();
+    println!(
+        "rolled back {} ({})",
+        history::applies(undone),
+        history::changes(total)
+    );
+    // The tools may now be running configs that changed underneath them.
+    if let Ok((cfg, _)) = load() {
+        let flattened: Vec<Change> =
+            targets.iter().flat_map(|e| e.changes.clone()).collect();
+        settle(&cfg, &flattened);
     }
+    if history::list().is_empty() {
+        println!("history is empty; the desktop is back to before baton touched it");
+    }
+    Ok(())
+}
 
-    if failures == 0 {
-        plan::clear_journal();
-        println!("rolled back {} change(s)", changes.len());
-        // The WM is now running a config that no longer exists on disk.
-        if let Ok((cfg, _)) = load() {
-            settle(&cfg, &changes);
-        }
-    } else {
-        // Keep the journal: the user should be able to try again.
-        eprintln!("baton: {failures} change(s) could not be reverted; journal kept");
-        anyhow::bail!("rollback incomplete");
+fn cmd_history() -> Result<()> {
+    let entries = history::list();
+    if entries.is_empty() {
+        println!("no applies recorded");
+        return Ok(());
     }
+    println!("{}, newest first:", history::applies(entries.len()));
+    for entry in entries.iter().rev() {
+        println!(
+            "  #{:<4} {:<16} {}",
+            entry.seq,
+            history::ago_now(entry.applied_at),
+            history::changes(entry.changes.len())
+        );
+        for c in &entry.changes {
+            println!("         {}", c.describe());
+        }
+    }
+    println!("\n`baton rollback` undoes #{}; `--all` undoes everything",
+        entries.last().unwrap().seq);
+    Ok(())
+}
+
+/// Forget the history without reverting anything. For when the current state
+/// is the one you want to keep.
+fn cmd_history_clear(assume_yes: bool) -> Result<()> {
+    let entries = history::list();
+    if entries.is_empty() {
+        println!("no applies recorded");
+        return Ok(());
+    }
+    println!(
+        "this forgets {} WITHOUT undoing them.",
+        history::applies(entries.len())
+    );
+    println!("the desktop keeps its current settings and they become the new baseline.");
+    if !assume_yes && !confirm("\nforget history?")? {
+        println!("history kept");
+        return Ok(());
+    }
+    history::clear();
+    println!("history cleared");
     Ok(())
 }
 
